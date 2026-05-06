@@ -1,0 +1,251 @@
+"""
+cegid_to_monplanning.py
+-----------------------
+Convertit un fichier xlsx extrait de Cegid en CSV Mon-Planning.
+
+- Copie l'original dans Conversions/original_TIMESTAMP.xlsx
+- Génère Conversions/monplanning_TIMESTAMP.csv
+
+Colonnes Cegid   → Colonnes Mon-Planning
+-----------------------------------------
+Date             → debut + fin  (groupement jours consécutifs)
+Client           → client
+Produit          → type  (via TYPE_MAP)
+Mission          → intitule
+HeureDebut/Fin   → demi_journee  (M / A / vide)
+config.consultant→ consultant
+"""
+
+import csv
+import json
+import re
+import shutil
+from datetime import date, timedelta
+from pathlib import Path
+
+import openpyxl
+
+# ── Chemins ────────────────────────────────────────────────
+BASE_DIR       = Path(__file__).resolve().parent.parent
+EXTRACTIONS    = BASE_DIR / "Extractions"
+CONVERSIONS    = BASE_DIR / "Conversions"
+CONFIG_PATH    = Path(__file__).resolve().parent / "config.json"
+
+CONVERSIONS.mkdir(parents=True, exist_ok=True)
+
+# ── Mapping type Cegid → type Mon-Planning ─────────────────
+TYPE_MAP = {
+    "tma"       : "TMA",
+    "bpo"       : "BPO",
+    "projet"    : "Projet",
+    "project"   : "Projet",
+    "formation" : "Formation",
+    "regie"     : "Régie",
+    "régie"     : "Régie",
+}
+
+# ── Mois français ──────────────────────────────────────────
+MOIS = {
+    "janvier":1,"février":2,"mars":3,"avril":4,"mai":5,"juin":6,
+    "juillet":7,"août":8,"septembre":9,"octobre":10,"novembre":11,"décembre":12,
+    "fevrier":2,"aout":8,  # variantes sans accent
+}
+
+
+def load_config():
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def timestamp():
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def parse_date_fr(text: str) -> date | None:
+    """'Lundi 21 mars 2026' → date(2026, 3, 21)"""
+    text = (text or "").strip().lower()
+    m = re.search(r"(\d{1,2})\s+(\w+)\s+(\d{4})", text)
+    if not m:
+        return None
+    day, month_str, year = m.groups()
+    month = MOIS.get(month_str)
+    if not month:
+        return None
+    try:
+        return date(int(year), month, int(day))
+    except ValueError:
+        return None
+
+
+def map_type(produit: str, type_projet: str) -> str:
+    """Déduit le type Mon-Planning depuis Produit / TypeProjet."""
+    for src in (produit, type_projet):
+        key = (src or "").strip().lower()
+        if key in TYPE_MAP:
+            return TYPE_MAP[key]
+        for k, v in TYPE_MAP.items():
+            if k in key:
+                return v
+    return (produit or "TMA").strip() or "TMA"
+
+
+def get_demi(h_debut: str, h_fin: str) -> str:
+    """
+    Déduit la demi-journée depuis les heures Cegid.
+    Matin  (M) : début < 12 h ET fin ≤ 13 h
+    Après-midi (A) : début ≥ 12 h
+    Journée complète : vide
+    """
+    if not h_debut:
+        return ""
+    try:
+        hd = int(h_debut.split(":")[0])
+        hf = int(h_fin.split(":")[0]) if h_fin else 24
+        if hd < 12 and hf <= 13:
+            return "M"
+        if hd >= 12:
+            return "A"
+    except (ValueError, IndexError):
+        pass
+    return ""
+
+
+def read_xlsx(path: Path) -> list[dict]:
+    """Lit le xlsx Cegid et retourne une liste de dicts."""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+
+    headers = [str(c).strip() if c else "" for c in rows[0]]
+    idx = {h: i for i, h in enumerate(headers)}
+
+    needed = {"Date", "Produit", "Mission", "TypeProjet", "Client", "HeureDebut", "HeureFin"}
+    missing = needed - set(idx.keys())
+    if missing:
+        raise ValueError(f"Colonnes manquantes dans le xlsx : {missing}")
+
+    data = []
+    for row in rows[1:]:
+        d = parse_date_fr(str(row[idx["Date"]] or ""))
+        if not d:
+            continue
+        data.append({
+            "date"       : d,
+            "produit"    : str(row[idx["Produit"]]    or "").strip(),
+            "mission"    : str(row[idx["Mission"]]    or "").strip(),
+            "type_projet": str(row[idx["TypeProjet"]] or "").strip(),
+            "client"     : str(row[idx["Client"]]     or "").strip(),
+            "h_debut"    : str(row[idx["HeureDebut"]] or "").strip(),
+            "h_fin"      : str(row[idx["HeureFin"]]   or "").strip(),
+        })
+
+    wb.close()
+    return data
+
+
+def group_missions(rows: list[dict], consultant: str) -> list[dict]:
+    """
+    Regroupe les lignes Cegid (1 par jour) en missions (debut → fin).
+    Deux lignes appartiennent à la même mission si :
+      - même (client, intitule, type, demi_journee)
+      - dates consécutives (écart ≤ 3 jours pour absorber les week-ends)
+    """
+    # Tri chronologique par (client, mission, date)
+    rows = sorted(rows, key=lambda r: (r["client"], r["mission"], r["date"]))
+
+    missions = []
+    for r in rows:
+        typ   = map_type(r["produit"], r["type_projet"])
+        demi  = get_demi(r["h_debut"], r["h_fin"])
+        key   = (r["client"], r["mission"], typ, demi)
+
+        if missions:
+            last = missions[-1]
+            gap  = (r["date"] - last["_fin"]).days
+            if last["_key"] == key and gap <= 3:
+                last["fin"]  = r["date"].isoformat()
+                last["_fin"] = r["date"]
+                continue
+
+        missions.append({
+            "_key"       : key,
+            "_fin"       : r["date"],
+            "client"     : r["client"],
+            "consultant" : consultant,
+            "type"       : typ,
+            "intitule"   : r["mission"],
+            "debut"      : r["date"].isoformat(),
+            "fin"        : r["date"].isoformat(),
+            "demi_journee": demi,
+        })
+
+    # Nettoyer les clés internes
+    for m in missions:
+        del m["_key"]
+        del m["_fin"]
+
+    return missions
+
+
+def write_csv(missions: list[dict], path: Path):
+    """Écrit le CSV Mon-Planning (séparateur ;, encodage UTF-8 BOM)."""
+    COLS = ["ref", "client", "consultant", "type", "intitule", "debut", "fin", "demi_journee"]
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=COLS, delimiter=";", extrasaction="ignore")
+        writer.writeheader()
+        for m in missions:
+            writer.writerow({**{"ref": ""}, **m})
+    print(f"CSV généré : {path}")
+
+
+def pick_xlsx() -> Path:
+    """Propose les xlsx disponibles et retourne le chemin choisi."""
+    files = sorted(EXTRACTIONS.glob("planning_import_*.xlsx"), reverse=True)
+    if not files:
+        raise FileNotFoundError(f"Aucun fichier xlsx dans {EXTRACTIONS}")
+
+    print("\nFichiers disponibles :")
+    for i, f in enumerate(files):
+        print(f"  [{i+1}] {f.name}")
+
+    choice = input(f"\nChoisir un fichier [1] : ").strip()
+    idx = int(choice) - 1 if choice else 0
+    if not (0 <= idx < len(files)):
+        idx = 0
+    return files[idx]
+
+
+def main():
+    cfg        = load_config()
+    consultant = cfg.get("consultant", "")
+    if not consultant:
+        consultant = input("Nom du consultant : ").strip()
+
+    xlsx_path = pick_xlsx()
+    ts        = timestamp()
+
+    # ── Copie de l'original ────────────────────────────────
+    original_copy = CONVERSIONS / f"original_{ts}.xlsx"
+    shutil.copy2(xlsx_path, original_copy)
+    print(f"Copie originale : {original_copy}")
+
+    # ── Conversion ─────────────────────────────────────────
+    print(f"Lecture de {xlsx_path.name}...")
+    rows     = read_xlsx(xlsx_path)
+    missions = group_missions(rows, consultant)
+
+    csv_path = CONVERSIONS / f"monplanning_{ts}.csv"
+    write_csv(missions, csv_path)
+
+    print(f"\n✅ {len(missions)} mission(s) exportée(s)")
+    print(f"   Original  → {original_copy.name}")
+    print(f"   Planning  → {csv_path.name}")
+
+
+if __name__ == "__main__":
+    main()

@@ -9,3 +9,10 @@ __pycache__/
 # Fichiers système
 .DS_Store
 Thumbs.db
+
+# Fichiers générés — ne pas versionner
+Conversions/original_*.xlsx
+Conversions/monplanning_*.csv
+
+# Garder le dossier Conversions vide dans git
+!Conversions/.gitkeep
