@@ -1,0 +1,11 @@
+# Fichiers temporaires Excel
+~$*
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Fichiers système
+.DS_Store
+Thumbs.db

@@ -1,0 +1,24 @@
+
+Ajouter :
+
+version avec logs
+
+version sans fenêtre
+
+version planifiée automatique
+
+version avec mise à jour Excel (pas de doublons)
+
+
+
+Prochaine Etapes : 
+
+📊 version sans doublons (pro)
+
+⏱ automatisation quotidienne
+
+📧 envoi automatique par mail
+
+🔗 connexion à ton planning
+
+passer niveau “outil métier”
