@@ -12,7 +12,7 @@ Date             → debut + fin  (groupement jours consécutifs)
 Client           → client
 Produit          → type  (via TYPE_MAP)
 Mission          → intitule
-HeureDebut/Fin   → demi_journee  (M / A / vide)
+HeureDebut/Fin   → planification  (journee complète / matin / apres-midi)
 config.consultant→ consultant
 """
 
@@ -118,25 +118,26 @@ def map_type(produit: str, type_projet: str) -> str:
     return (produit or "TMA").strip() or "TMA"
 
 
-def get_demi(h_debut: str, h_fin: str) -> str:
+def get_planification(h_debut: str, h_fin: str) -> str:
     """
-    Déduit la demi-journée depuis les heures Cegid.
-    Matin  (M) : début < 12 h ET fin ≤ 13 h
-    Après-midi (A) : début ≥ 12 h
-    Journée complète : vide
+    Déduit la planification depuis les heures Cegid.
+    matin            : début < 12 h ET fin ≤ 13 h
+    apres-midi       : début ≥ 12 h
+    journee complète : début < 12 h ET fin > 13 h
     """
     if not h_debut:
-        return ""
+        return "journee complète"
     try:
         hd = int(h_debut.split(":")[0])
         hf = int(h_fin.split(":")[0]) if h_fin else 24
         if hd < 12 and hf <= 13:
-            return "M"
+            return "matin"
         if hd >= 12:
-            return "A"
+            return "apres-midi"
+        return "journee complète"
     except (ValueError, IndexError):
         pass
-    return ""
+    return "journee complète"
 
 
 def read_xlsx(path: Path) -> list[dict]:
@@ -178,7 +179,7 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
     """
     Regroupe les lignes Cegid (1 par jour) en missions (debut → fin).
     Deux lignes appartiennent à la même mission si :
-      - même (client, intitule, type, demi_journee)
+      - même (client, intitule, type, planification)
       - dates consécutives (écart ≤ 3 jours pour absorber les week-ends)
     """
     # Tri chronologique par (client, mission, date)
@@ -187,8 +188,8 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
     missions = []
     for r in rows:
         typ   = map_type(r["produit"], r["type_projet"])
-        demi  = get_demi(r["h_debut"], r["h_fin"])
-        key   = (r["client"], r["mission"], typ, demi)
+                planif = get_planification(r["h_debut"], r["h_fin"])
+        key    = (r["client"], r["mission"], typ, planif)
 
         if missions:
             last = missions[-1]
@@ -206,7 +207,7 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
             "intitule"    : r["mission"],
             "debut"       : r["date"].strftime("%d/%m/%Y"),
             "fin"         : r["date"].strftime("%d/%m/%Y"),
-            "demi_journee": demi,
+            "planification": planif,
         })
 
     # Nettoyer les clés internes
@@ -220,7 +221,7 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
 
 def write_csv(missions: list[dict], path: Path):
     """Écrit le CSV Mon-Planning (séparateur ;, encodage UTF-8 BOM)."""
-    COLS = ["ref", "client", "consultant", "type", "intitule", "debut", "fin", "demi_journee"]
+    COLS = ["ref", "client", "consultant", "type", "intitule", "debut", "fin", "planification"]
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=COLS, delimiter=";", extrasaction="ignore")
         writer.writeheader()
@@ -229,8 +230,8 @@ def write_csv(missions: list[dict], path: Path):
     print(f"CSV généré : {path}")
 
 
-def pick_xlsx() -> Path:
-    """Propose les xlsx disponibles et retourne le chemin choisi."""
+def pick_xlsx() -> list[Path]:
+    """Propose les xlsx disponibles et retourne la liste des fichiers choisis."""
     files = sorted(EXTRACTIONS.glob("planning_import_*.xlsx"), reverse=True)
     if not files:
         raise FileNotFoundError(f"Aucun fichier xlsx dans {EXTRACTIONS}")
@@ -239,11 +240,34 @@ def pick_xlsx() -> Path:
     for i, f in enumerate(files):
         print(f"  [{i+1}] {f.name}")
 
-    choice = input(f"\nChoisir un fichier [1] : ").strip()
-    idx = int(choice) - 1 if choice else 0
-    if not (0 <= idx < len(files)):
-        idx = 0
-    return files[idx]
+    print("\n  [0] Tous les fichiers")
+    choice = input("\nChoisir (ex: 1  ou  1,3  ou  0 pour tout) [1] : ").strip()
+
+    if not choice or choice == "1":
+        return [files[0]]
+    if choice == "0":
+        return list(files)
+
+    selected = []
+    for part in choice.split(","):
+        part = part.strip()
+        if part.isdigit():
+            idx = int(part) - 1
+            if 0 <= idx < len(files):
+                selected.append(files[idx])
+    return selected or [files[0]]
+
+
+def deduplicate(missions: list[dict]) -> list[dict]:
+    """Supprime les doublons sur (client, type, intitule, debut)."""
+    seen = set()
+    unique = []
+    for m in missions:
+        key = (m["client"], m["type"], m["intitule"], m["debut"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(m)
+    return unique
 
 
 def main():
@@ -252,24 +276,24 @@ def main():
     if not consultant:
         consultant = input("Nom du consultant : ").strip()
 
-    xlsx_path = pick_xlsx()
-    ts        = timestamp()
+    xlsx_paths = pick_xlsx()
+    ts         = timestamp()
 
-    # ── Copie de l'original ────────────────────────────────
-    original_copy = CONVERSIONS / f"original_{ts}.xlsx"
-    shutil.copy2(xlsx_path, original_copy)
-    print(f"Copie originale : {original_copy}")
+    # ── Lecture et fusion de toutes les extractions ────────
+    all_rows = []
+    for xlsx_path in xlsx_paths:
+        print(f"Lecture de {xlsx_path.name}...")
+        all_rows.extend(read_xlsx(xlsx_path))
 
-    # ── Conversion ─────────────────────────────────────────
-    print(f"Lecture de {xlsx_path.name}...")
-    rows     = read_xlsx(xlsx_path)
-    missions = group_missions(rows, consultant)
+    missions = group_missions(all_rows, consultant)
+    missions = deduplicate(missions)
 
     csv_path = CONVERSIONS / f"monplanning_{ts}.csv"
     write_csv(missions, csv_path)
 
-    print(f"\n✅ {len(missions)} mission(s) exportée(s)")
-    print(f"   Original  → {original_copy.name}")
+    fichiers = ", ".join(p.name for p in xlsx_paths)
+    print(f"\n✅ {len(missions)} mission(s) exportée(s) depuis {len(xlsx_paths)} fichier(s)")
+    print(f"   Sources   → {fichiers}")
     print(f"   Planning  → {csv_path.name}")
 
 
