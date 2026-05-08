@@ -233,7 +233,7 @@ def read_xlsx_converted(path: Path, consultant: str) -> list[dict]:
     return missions
 
 
-
+def group_missions(rows: list[dict], consultant: str) -> list[dict]:
     """
     Regroupe les lignes Cegid (1 par jour) en missions (debut → fin).
     Deux lignes appartiennent à la même mission si :
