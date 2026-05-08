@@ -230,8 +230,8 @@ def write_csv(missions: list[dict], path: Path):
     print(f"CSV généré : {path}")
 
 
-def pick_xlsx() -> Path:
-    """Propose les xlsx disponibles et retourne le chemin choisi."""
+def pick_xlsx() -> list[Path]:
+    """Propose les xlsx disponibles et retourne la liste des fichiers choisis."""
     files = sorted(EXTRACTIONS.glob("planning_import_*.xlsx"), reverse=True)
     if not files:
         raise FileNotFoundError(f"Aucun fichier xlsx dans {EXTRACTIONS}")
@@ -240,11 +240,34 @@ def pick_xlsx() -> Path:
     for i, f in enumerate(files):
         print(f"  [{i+1}] {f.name}")
 
-    choice = input(f"\nChoisir un fichier [1] : ").strip()
-    idx = int(choice) - 1 if choice else 0
-    if not (0 <= idx < len(files)):
-        idx = 0
-    return files[idx]
+    print("\n  [0] Tous les fichiers")
+    choice = input("\nChoisir (ex: 1  ou  1,3  ou  0 pour tout) [1] : ").strip()
+
+    if not choice or choice == "1":
+        return [files[0]]
+    if choice == "0":
+        return list(files)
+
+    selected = []
+    for part in choice.split(","):
+        part = part.strip()
+        if part.isdigit():
+            idx = int(part) - 1
+            if 0 <= idx < len(files):
+                selected.append(files[idx])
+    return selected or [files[0]]
+
+
+def deduplicate(missions: list[dict]) -> list[dict]:
+    """Supprime les doublons sur (client, type, intitule, debut)."""
+    seen = set()
+    unique = []
+    for m in missions:
+        key = (m["client"], m["type"], m["intitule"], m["debut"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(m)
+    return unique
 
 
 def main():
@@ -253,24 +276,24 @@ def main():
     if not consultant:
         consultant = input("Nom du consultant : ").strip()
 
-    xlsx_path = pick_xlsx()
-    ts        = timestamp()
+    xlsx_paths = pick_xlsx()
+    ts         = timestamp()
 
-    # ── Copie de l'original ────────────────────────────────
-    original_copy = CONVERSIONS / f"original_{ts}.xlsx"
-    shutil.copy2(xlsx_path, original_copy)
-    print(f"Copie originale : {original_copy}")
+    # ── Lecture et fusion de toutes les extractions ────────
+    all_rows = []
+    for xlsx_path in xlsx_paths:
+        print(f"Lecture de {xlsx_path.name}...")
+        all_rows.extend(read_xlsx(xlsx_path))
 
-    # ── Conversion ─────────────────────────────────────────
-    print(f"Lecture de {xlsx_path.name}...")
-    rows     = read_xlsx(xlsx_path)
-    missions = group_missions(rows, consultant)
+    missions = group_missions(all_rows, consultant)
+    missions = deduplicate(missions)
 
     csv_path = CONVERSIONS / f"monplanning_{ts}.csv"
     write_csv(missions, csv_path)
 
-    print(f"\n✅ {len(missions)} mission(s) exportée(s)")
-    print(f"   Original  → {original_copy.name}")
+    fichiers = ", ".join(p.name for p in xlsx_paths)
+    print(f"\n✅ {len(missions)} mission(s) exportée(s) depuis {len(xlsx_paths)} fichier(s)")
+    print(f"   Sources   → {fichiers}")
     print(f"   Planning  → {csv_path.name}")
 
 
