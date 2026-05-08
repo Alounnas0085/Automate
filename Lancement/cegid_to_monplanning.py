@@ -123,7 +123,7 @@ def get_demi(h_debut: str, h_fin: str) -> str:
     Déduit la demi-journée depuis les heures Cegid.
     Matin  (M) : début < 12 h ET fin ≤ 13 h
     Après-midi (A) : début ≥ 12 h
-    Journée complète : vide
+    Journée complète (1) : début < 12 h ET fin > 13 h
     """
     if not h_debut:
         return ""
@@ -134,6 +134,7 @@ def get_demi(h_debut: str, h_fin: str) -> str:
             return "M"
         if hd >= 12:
             return "A"
+        return "1"
     except (ValueError, IndexError):
         pass
     return ""
