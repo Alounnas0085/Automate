@@ -281,9 +281,20 @@ def main():
 
     # ── Lecture et fusion de toutes les extractions ────────
     all_rows = []
+    ok, skipped = [], []
     for xlsx_path in xlsx_paths:
         print(f"Lecture de {xlsx_path.name}...")
-        all_rows.extend(read_xlsx(xlsx_path))
+        try:
+            rows = read_xlsx(xlsx_path)
+            all_rows.extend(rows)
+            ok.append(xlsx_path.name)
+        except (ValueError, Exception) as e:
+            print(f"  ⚠️  Ignoré ({e})")
+            skipped.append(xlsx_path.name)
+
+    if not all_rows:
+        print("\n❌ Aucune donnée valide trouvée.")
+        return
 
     missions = group_missions(all_rows, consultant)
     missions = deduplicate(missions)
@@ -291,10 +302,12 @@ def main():
     csv_path = CONVERSIONS / f"monplanning_{ts}.csv"
     write_csv(missions, csv_path)
 
-    fichiers = ", ".join(p.name for p in xlsx_paths)
-    print(f"\n✅ {len(missions)} mission(s) exportée(s) depuis {len(xlsx_paths)} fichier(s)")
-    print(f"   Sources   → {fichiers}")
+    print(f"\n✅ {len(missions)} mission(s) exportée(s) depuis {len(ok)} fichier(s)")
     print(f"   Planning  → {csv_path.name}")
+    if skipped:
+        print(f"\n⚠️  Fichiers ignorés ({len(skipped)}) :")
+        for s in skipped:
+            print(f"   - {s}")
 
 
 if __name__ == "__main__":
