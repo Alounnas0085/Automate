@@ -187,8 +187,8 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
 
     missions = []
     for r in rows:
-        typ   = map_type(r["produit"], r["type_projet"])
-                planif = get_planification(r["h_debut"], r["h_fin"])
+        typ    = map_type(r["produit"], r["type_projet"])
+        planif = get_planification(r["h_debut"], r["h_fin"])
         key    = (r["client"], r["mission"], typ, planif)
 
         if missions:
