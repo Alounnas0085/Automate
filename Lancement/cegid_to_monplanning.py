@@ -140,21 +140,47 @@ def get_planification(h_debut: str, h_fin: str) -> str:
     return "journee complète"
 
 
+# Noms alternatifs acceptés pour chaque colonne attendue
+COLUMN_ALIASES = {
+    "Date"       : ["Date", "date", "DATE", "Jour", "jour"],
+    "Produit"    : ["Produit", "produit", "PRODUIT", "Product"],
+    "Mission"    : ["Mission", "mission", "MISSION", "Intitulé", "Intitule"],
+    "TypeProjet" : ["TypeProjet", "Type Projet", "Type", "type", "TypeMission"],
+    "Client"     : ["Client", "client", "CLIENT", "Société", "Societe"],
+    "HeureDebut" : ["HeureDebut", "Heure Debut", "Debut", "HeureD", "Heure_Debut"],
+    "HeureFin"   : ["HeureFin", "Heure Fin", "Fin", "HeureF", "Heure_Fin"],
+}
+
+
+def resolve_headers(headers: list[str]) -> dict[str, int]:
+    """Résout les colonnes même si les noms varient d'un fichier à l'autre."""
+    raw_idx = {h: i for i, h in enumerate(headers)}
+    resolved = {}
+    for canonical, aliases in COLUMN_ALIASES.items():
+        for alias in aliases:
+            if alias in raw_idx:
+                resolved[canonical] = raw_idx[alias]
+                break
+    return resolved
+
+
 def read_xlsx(path: Path) -> list[dict]:
     """Lit le xlsx Cegid et retourne une liste de dicts."""
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
+        wb.close()
         return []
 
     headers = [str(c).strip() if c else "" for c in rows[0]]
-    idx = {h: i for i, h in enumerate(headers)}
+    idx = resolve_headers(headers)
 
     needed = {"Date", "Produit", "Mission", "TypeProjet", "Client", "HeureDebut", "HeureFin"}
     missing = needed - set(idx.keys())
     if missing:
-        raise ValueError(f"Colonnes manquantes dans le xlsx : {missing}")
+        print(f"  Colonnes trouvées : {[h for h in headers if h]}")
+        raise ValueError(f"Colonnes manquantes : {missing}")
 
     data = []
     for row in rows[1:]:
@@ -281,9 +307,20 @@ def main():
 
     # ── Lecture et fusion de toutes les extractions ────────
     all_rows = []
+    ok, skipped = [], []
     for xlsx_path in xlsx_paths:
         print(f"Lecture de {xlsx_path.name}...")
-        all_rows.extend(read_xlsx(xlsx_path))
+        try:
+            rows = read_xlsx(xlsx_path)
+            all_rows.extend(rows)
+            ok.append(xlsx_path.name)
+        except (ValueError, Exception) as e:
+            print(f"  ⚠️  Ignoré ({e})")
+            skipped.append(xlsx_path.name)
+
+    if not all_rows:
+        print("\n❌ Aucune donnée valide trouvée.")
+        return
 
     missions = group_missions(all_rows, consultant)
     missions = deduplicate(missions)
@@ -291,10 +328,12 @@ def main():
     csv_path = CONVERSIONS / f"monplanning_{ts}.csv"
     write_csv(missions, csv_path)
 
-    fichiers = ", ".join(p.name for p in xlsx_paths)
-    print(f"\n✅ {len(missions)} mission(s) exportée(s) depuis {len(xlsx_paths)} fichier(s)")
-    print(f"   Sources   → {fichiers}")
+    print(f"\n✅ {len(missions)} mission(s) exportée(s) depuis {len(ok)} fichier(s)")
     print(f"   Planning  → {csv_path.name}")
+    if skipped:
+        print(f"\n⚠️  Fichiers ignorés ({len(skipped)}) :")
+        for s in skipped:
+            print(f"   - {s}")
 
 
 if __name__ == "__main__":
