@@ -35,13 +35,15 @@ CONVERSIONS.mkdir(parents=True, exist_ok=True)
 
 # ── Mapping type Cegid → type Mon-Planning ─────────────────
 TYPE_MAP = {
-    "tma"       : "TMA",
-    "bpo"       : "BPO",
-    "projet"    : "Projet",
-    "project"   : "Projet",
-    "formation" : "Formation",
-    "regie"     : "Régie",
-    "régie"     : "Régie",
+    "tma"        : "TMA",
+    "bpo"        : "BPO",
+    "projet"     : "Projet",
+    "project"    : "Projet",
+    "migration"  : "Projet",
+    "migrations" : "Projet",
+    "formation"  : "Formation",
+    "regie"      : "Régie",
+    "régie"      : "Régie",
 }
 
 # ── Mois français ──────────────────────────────────────────
@@ -64,20 +66,44 @@ def timestamp():
     return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
-def parse_date_fr(text: str) -> date | None:
-    """'Lundi 21 mars 2026' → date(2026, 3, 21)"""
-    text = (text or "").strip().lower()
-    m = re.search(r"(\d{1,2})\s+(\w+)\s+(\d{4})", text)
-    if not m:
+def parse_date(value) -> date | None:
+    """Accepte un objet datetime/date openpyxl ou un texte dans plusieurs formats."""
+    from datetime import datetime as dt
+    if isinstance(value, dt):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text or text.lower() in ("none", ""):
         return None
-    day, month_str, year = m.groups()
-    month = MOIS.get(month_str)
-    if not month:
-        return None
-    try:
-        return date(int(year), month, int(day))
-    except ValueError:
-        return None
+    # DD-MM-YYYY ou DD/MM/YYYY
+    m = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$", text)
+    if m:
+        day, month, year = m.groups()
+        try:
+            return date(int(year), int(month), int(day))
+        except ValueError:
+            pass
+    # YYYY-MM-DD (openpyxl datetime converti en str)
+    m = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
+    if m:
+        year, month, day = m.groups()
+        try:
+            return date(int(year), int(month), int(day))
+        except ValueError:
+            pass
+    # Texte français : 'Lundi 21 mars 2026'
+    text_low = text.lower()
+    m = re.search(r"(\d{1,2})\s+(\w+)\s+(\d{4})", text_low)
+    if m:
+        day, month_str, year = m.groups()
+        month = MOIS.get(month_str)
+        if month:
+            try:
+                return date(int(year), month, int(day))
+            except ValueError:
+                pass
+    return None
 
 
 def map_type(produit: str, type_projet: str) -> str:
@@ -131,7 +157,7 @@ def read_xlsx(path: Path) -> list[dict]:
 
     data = []
     for row in rows[1:]:
-        d = parse_date_fr(str(row[idx["Date"]] or ""))
+        d = parse_date(row[idx["Date"]])
         if not d:
             continue
         data.append({
@@ -168,26 +194,26 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
             last = missions[-1]
             gap  = (r["date"] - last["_fin"]).days
             if last["_key"] == key and gap <= 3:
-                last["fin"]  = r["date"].isoformat()
                 last["_fin"] = r["date"]
                 continue
 
         missions.append({
-            "_key"       : key,
-            "_fin"       : r["date"],
-            "client"     : r["client"],
-            "consultant" : consultant,
-            "type"       : typ,
-            "intitule"   : r["mission"],
-            "debut"      : r["date"].isoformat(),
-            "fin"        : r["date"].isoformat(),
+            "_key"        : key,
+            "_fin"        : r["date"],
+            "client"      : r["client"],
+            "consultant"  : consultant,
+            "type"        : typ,
+            "intitule"    : r["mission"],
+            "debut"       : r["date"].strftime("%d/%m/%Y"),
+            "fin"         : r["date"].strftime("%d/%m/%Y"),
             "demi_journee": demi,
         })
 
     # Nettoyer les clés internes
     for m in missions:
         del m["_key"]
-        del m["_fin"]
+        fin_date = m.pop("_fin")
+        m["fin"] = fin_date.strftime("%d/%m/%Y")
 
     return missions
 
@@ -198,8 +224,8 @@ def write_csv(missions: list[dict], path: Path):
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=COLS, delimiter=";", extrasaction="ignore")
         writer.writeheader()
-        for m in missions:
-            writer.writerow({**{"ref": ""}, **m})
+        for i, m in enumerate(missions, start=1):
+            writer.writerow({**{"ref": f"M{i:03d}"}, **m})
     print(f"CSV généré : {path}")
 
 
