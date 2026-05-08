@@ -12,7 +12,7 @@ Date             → debut + fin  (groupement jours consécutifs)
 Client           → client
 Produit          → type  (via TYPE_MAP)
 Mission          → intitule
-HeureDebut/Fin   → demi_journee  (M / A / vide)
+HeureDebut/Fin   → planification  (journee complète / matin / apres-midi)
 config.consultant→ consultant
 """
 
@@ -118,26 +118,26 @@ def map_type(produit: str, type_projet: str) -> str:
     return (produit or "TMA").strip() or "TMA"
 
 
-def get_demi(h_debut: str, h_fin: str) -> str:
+def get_planification(h_debut: str, h_fin: str) -> str:
     """
-    Déduit la demi-journée depuis les heures Cegid.
-    Matin  (M) : début < 12 h ET fin ≤ 13 h
-    Après-midi (A) : début ≥ 12 h
-    Journée complète (1) : début < 12 h ET fin > 13 h
+    Déduit la planification depuis les heures Cegid.
+    matin            : début < 12 h ET fin ≤ 13 h
+    apres-midi       : début ≥ 12 h
+    journee complète : début < 12 h ET fin > 13 h
     """
     if not h_debut:
-        return ""
+        return "journee complète"
     try:
         hd = int(h_debut.split(":")[0])
         hf = int(h_fin.split(":")[0]) if h_fin else 24
         if hd < 12 and hf <= 13:
-            return "M"
+            return "matin"
         if hd >= 12:
-            return "A"
-        return "1"
+            return "apres-midi"
+        return "journee complète"
     except (ValueError, IndexError):
         pass
-    return ""
+    return "journee complète"
 
 
 def read_xlsx(path: Path) -> list[dict]:
@@ -179,7 +179,7 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
     """
     Regroupe les lignes Cegid (1 par jour) en missions (debut → fin).
     Deux lignes appartiennent à la même mission si :
-      - même (client, intitule, type, demi_journee)
+      - même (client, intitule, type, planification)
       - dates consécutives (écart ≤ 3 jours pour absorber les week-ends)
     """
     # Tri chronologique par (client, mission, date)
@@ -188,8 +188,8 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
     missions = []
     for r in rows:
         typ   = map_type(r["produit"], r["type_projet"])
-        demi  = get_demi(r["h_debut"], r["h_fin"])
-        key   = (r["client"], r["mission"], typ, demi)
+                planif = get_planification(r["h_debut"], r["h_fin"])
+        key    = (r["client"], r["mission"], typ, planif)
 
         if missions:
             last = missions[-1]
@@ -207,7 +207,7 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
             "intitule"    : r["mission"],
             "debut"       : r["date"].strftime("%d/%m/%Y"),
             "fin"         : r["date"].strftime("%d/%m/%Y"),
-            "demi_journee": demi,
+            "planification": planif,
         })
 
     # Nettoyer les clés internes
@@ -221,7 +221,7 @@ def group_missions(rows: list[dict], consultant: str) -> list[dict]:
 
 def write_csv(missions: list[dict], path: Path):
     """Écrit le CSV Mon-Planning (séparateur ;, encodage UTF-8 BOM)."""
-    COLS = ["ref", "client", "consultant", "type", "intitule", "debut", "fin", "demi_journee"]
+    COLS = ["ref", "client", "consultant", "type", "intitule", "debut", "fin", "planification"]
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=COLS, delimiter=";", extrasaction="ignore")
         writer.writeheader()
