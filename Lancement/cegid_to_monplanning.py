@@ -201,7 +201,39 @@ def read_xlsx(path: Path) -> list[dict]:
     return data
 
 
-def group_missions(rows: list[dict], consultant: str) -> list[dict]:
+CONVERTED_COLS = {"ref", "client", "consultant", "type", "intitule", "debut", "fin"}
+
+
+def read_xlsx_converted(path: Path, consultant: str) -> list[dict]:
+    """Lit un xlsx déjà au format modele_missions et retourne des missions directement."""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    if not rows:
+        return []
+
+    headers = [str(c).strip() if c else "" for c in rows[0]]
+    idx = {h: i for i, h in enumerate(headers)}
+
+    missions = []
+    for row in rows[1:]:
+        debut = str(row[idx["debut"]] or "").strip()
+        if not debut:
+            continue
+        missions.append({
+            "client"       : str(row[idx["client"]]     or "").strip(),
+            "consultant"   : str(row[idx.get("consultant", -1)] or consultant).strip() or consultant,
+            "type"         : str(row[idx["type"]]       or "").strip(),
+            "intitule"     : str(row[idx["intitule"]]   or "").strip(),
+            "debut"        : debut,
+            "fin"          : str(row[idx["fin"]]        or debut).strip(),
+            "planification": "journee complète",
+        })
+    return missions
+
+
+
     """
     Regroupe les lignes Cegid (1 par jour) en missions (debut → fin).
     Deux lignes appartiennent à la même mission si :
@@ -306,23 +338,35 @@ def main():
     ts         = timestamp()
 
     # ── Lecture et fusion de toutes les extractions ────────
-    all_rows = []
-    ok, skipped = [], []
+    all_rows      = []
+    pre_missions  = []
+    ok, skipped   = [], []
+
     for xlsx_path in xlsx_paths:
         print(f"Lecture de {xlsx_path.name}...")
         try:
-            rows = read_xlsx(xlsx_path)
-            all_rows.extend(rows)
+            # Détecter le format du fichier
+            wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+            first_row = next(wb.active.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            wb.close()
+            headers = {str(c).strip() for c in first_row if c}
+
+            if CONVERTED_COLS.issubset(headers):
+                # Fichier déjà converti → lire directement comme missions
+                pre_missions.extend(read_xlsx_converted(xlsx_path, consultant))
+            else:
+                # Fichier brut Cegid → lire comme lignes journalières
+                all_rows.extend(read_xlsx(xlsx_path))
             ok.append(xlsx_path.name)
-        except (ValueError, Exception) as e:
+        except Exception as e:
             print(f"  ⚠️  Ignoré ({e})")
             skipped.append(xlsx_path.name)
 
-    if not all_rows:
+    if not all_rows and not pre_missions:
         print("\n❌ Aucune donnée valide trouvée.")
         return
 
-    missions = group_missions(all_rows, consultant)
+    missions = group_missions(all_rows, consultant) + pre_missions
     missions = deduplicate(missions)
 
     csv_path = CONVERSIONS / f"monplanning_{ts}.csv"
